@@ -41,7 +41,6 @@ def identificar_tipo(texto: str) -> str:
 
 def extrair_base_calculo(texto: str) -> float:
     """Tenta extrair a base de cálculo de forma mais inteligente"""
-    # 1. Procura por padrões específicos
     padroes = [
         r'VALOR TOTAL DO SERVIÇO\s*=\s*R\$\s*([\d.]+,\d{2})',
         r'BASE DE CÁLCULO.*?R\$\s*([\d.]+,\d{2})',
@@ -56,7 +55,7 @@ def extrair_base_calculo(texto: str) -> float:
             except:
                 pass
 
-    # 2. Fallback: maior valor monetário
+    # Fallback: maior valor monetário
     padrao = r'R\$\s*([\d.]+,\d{2})'
     valores = re.findall(padrao, texto)
     nums = []
@@ -68,7 +67,6 @@ def extrair_base_calculo(texto: str) -> float:
     return max(nums) if nums else 0.0
 
 def extrair_valor_principal_ns(texto: str) -> float:
-    """Extrai o valor principal da NS (maior valor que não seja retenção pequena)"""
     padrao = r'R\$\s*([\d.]+,\d{2})'
     valores = re.findall(padrao, texto)
     nums = []
