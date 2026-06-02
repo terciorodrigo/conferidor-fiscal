@@ -6,22 +6,7 @@ import pandas as pd
 
 st.set_page_config(page_title="Conferidor Fiscal Avançado", layout="wide")
 st.title("🧾 Conferidor Fiscal Avançado")
-st.markdown("**Múltiplas NFS-e + Detecção automática de Simples Nacional + Regras de São Paulo**")
-
-# ===================== REGRAS =====================
-regras = {
-    "6190": {"aliquota": 9.45, "nome": "Demais serviços"},
-    "8863": {"aliquota": 4.65, "nome": "Associações e cooperativas"},
-    "6175": {"aliquota": 7.05, "nome": "Transporte de passageiros nacional"},
-}
-
-def classificar_servico(descricao: str) -> Tuple[str, float, str]:
-    desc = descricao.upper()
-    if any(p in desc for p in ["LIMPEZA", "MÃO DE OBRA", "SERVIÇOS CONTINUADOS", "LOCAÇÃO", "VIGILÂNCIA", "MANUTENÇÃO", "ELEVADOR", "ADMINISTRAÇÃO", "TEMPORÁRIOS", "EFETIVOS"]):
-        return "6190", 9.45, "Demais serviços"
-    if "COOPERATIVA" in desc or "ASSOCIAÇÃO" in desc:
-        return "8863", 4.65, "Associações / Cooperativas"
-    return "6190", 9.45, "Demais serviços (padrão)"
+st.markdown("**Múltiplas NFS-e + Detecção de Simples Nacional + Regras São Paulo**")
 
 def detectar_simples_nacional(texto: str) -> bool:
     t = texto.upper()
@@ -40,25 +25,40 @@ def extrair_texto_pdf(arquivo) -> str:
         with pdfplumber.open(arquivo) as pdf:
             for page in pdf.pages:
                 texto += (page.extract_text() or "") + "\n"
-    except:
-        pass
+    except Exception as e:
+        st.warning(f"Erro ao ler {arquivo.name}: {e}")
     return texto
 
 def identificar_tipo(texto: str) -> str:
     t = texto.upper()
-    if "NFS-E" in t or "NOTA FISCAL DE SERVIÇOS" in t or "PREFEITURA" in t and "SERVIÇOS" in t:
+    if "NFS-E" in t or "NOTA FISCAL DE SERVIÇOS" in t or ("PREFEITURA" in t and "SERVIÇOS" in t):
         return "NFS"
-    if "SIAFI" in t or "NOTA LANCAMENTO DE SISTEMA" in t or "NS" in t and "EVENTO" in t:
+    if "SIAFI" in t or "NOTA LANCAMENTO DE SISTEMA" in t or ("NS" in t and "EVENTO" in t):
         return "NS"
     if "CONTA DEPÓSITO VINCULADA" in t or "PROVISÃO MENSAL" in t or "TOTAL A SER PROVISIONADO" in t:
         return "CONTA_VINCULADA"
     return "DESCONHECIDO"
 
 def extrair_base_calculo(texto: str) -> float:
+    """Tenta extrair a base de cálculo de forma mais inteligente"""
+    # 1. Procura por padrões específicos
+    padroes = [
+        r'VALOR TOTAL DO SERVIÇO\s*=\s*R\$\s*([\d.]+,\d{2})',
+        r'BASE DE CÁLCULO.*?R\$\s*([\d.]+,\d{2})',
+        r'VALOR TOTAL.*?R\$\s*([\d.]+,\d{2})',
+        r'FATURAMENTO.*?R\$\s*([\d.]+,\d{2})',
+    ]
+    for padrao in padroes:
+        match = re.search(padrao, texto, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1).replace('.', '').replace(',', '.'))
+            except:
+                pass
+
+    # 2. Fallback: maior valor monetário
     padrao = r'R\$\s*([\d.]+,\d{2})'
     valores = re.findall(padrao, texto)
-    if not valores:
-        return 0.0
     nums = []
     for v in valores:
         try:
@@ -67,7 +67,8 @@ def extrair_base_calculo(texto: str) -> float:
             pass
     return max(nums) if nums else 0.0
 
-def extrair_valores_monetarios(texto: str) -> List[float]:
+def extrair_valor_principal_ns(texto: str) -> float:
+    """Extrai o valor principal da NS (maior valor que não seja retenção pequena)"""
     padrao = r'R\$\s*([\d.]+,\d{2})'
     valores = re.findall(padrao, texto)
     nums = []
@@ -76,13 +77,23 @@ def extrair_valores_monetarios(texto: str) -> List[float]:
             nums.append(float(v.replace('.', '').replace(',', '.')))
         except:
             pass
-    return nums
+    if not nums:
+        return 0.0
+    return max(nums)
+
+def classificar_servico(descricao: str) -> Tuple[str, float, str]:
+    desc = descricao.upper()
+    if any(p in desc for p in ["LIMPEZA", "MÃO DE OBRA", "SERVIÇOS CONTINUADOS", "LOCAÇÃO", "VIGILÂNCIA", "MANUTENÇÃO", "ELEVADOR", "ADMINISTRAÇÃO", "TEMPORÁRIOS", "EFETIVOS"]):
+        return "6190", 9.45, "Demais serviços"
+    if "COOPERATIVA" in desc or "ASSOCIAÇÃO" in desc:
+        return "8863", 4.65, "Associações / Cooperativas"
+    return "6190", 9.45, "Demais serviços (padrão)"
 
 # ===================== INTERFACE =====================
-st.info("Envie **uma ou mais NFS-e** + **uma Nota de Sistema**. O app detecta automaticamente se o prestador é Simples Nacional.")
+st.info("Envie **uma ou mais NFS-e** + **uma Nota de Sistema**. O app detecta automaticamente Simples Nacional.")
 
 uploaded_files = st.file_uploader(
-    "Arraste ou selecione os arquivos PDF (NFS-e + NS)",
+    "Arraste os PDFs (NFS-e + NS)",
     type=["pdf"],
     accept_multiple_files=True
 )
@@ -93,7 +104,6 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
     else:
         nfs_list = []
         ns_texto = ""
-        conta_texto = ""
 
         for file in uploaded_files:
             texto = extrair_texto_pdf(file)
@@ -102,8 +112,6 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
                 nfs_list.append({"nome": file.name, "texto": texto})
             elif tipo == "NS":
                 ns_texto = texto
-            elif tipo == "CONTA_VINCULADA":
-                conta_texto = texto
 
         if not nfs_list or not ns_texto:
             st.error("É necessário pelo menos uma NFS-e e uma Nota de Sistema.")
@@ -142,25 +150,23 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
                     "Observação": obs
                 })
 
-            # ===================== TABELA INDIVIDUAL =====================
+            # Tabela
             st.subheader("📋 Resultado por NFS-e")
             df = pd.DataFrame(resultados)
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-            # ===================== RESUMO CONSOLIDADO =====================
+            # Resumo
             st.subheader("📊 Resumo Consolidado")
-
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Base de Cálculo", f"R$ {total_base:,.2f}")
+                st.metric("Total Base NFS-e", f"R$ {total_base:,.2f}")
             with col2:
-                st.metric("Total Retenção Esperada", f"R$ {total_retencao_esperada:,.2f}")
+                st.metric("Retenção Esperada Total", f"R$ {total_retencao_esperada:,.2f}")
             with col3:
-                valores_ns = extrair_valores_monetarios(ns_texto)
-                valor_ns = max(valores_ns) if valores_ns else 0
-                st.metric("Valor Principal na NS", f"R$ {valor_ns:,.2f}")
+                valor_ns = extrair_valor_principal_ns(ns_texto)
+                st.metric("Valor Principal NS", f"R$ {valor_ns:,.2f}")
 
-            # ===================== RESULTADO FINAL =====================
+            # Resultado Final
             st.subheader("✅ Resultado da Conferência")
 
             diferenca = abs(total_base - valor_ns)
@@ -170,30 +176,22 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
                 if qtd_simples > 0:
                     st.success("**Conferência OK** — Prestador(es) Simples Nacional detectado(s)")
                     st.markdown("""
-                    **O que foi verificado:**
-                    - Retenção federal (IR + CSLL + PIS + COFINS) esperada: **R$ 0,00** → Correto para Simples Nacional
-                    - Soma das bases das NFS-e confere com o valor da Nota de Sistema
-                    - Nenhuma retenção federal indevida identificada
-
-                    **Atenção (São Paulo):**
-                    Para órgãos públicos municipais e estaduais de São Paulo, quando o prestador é Simples Nacional, **o ISS deve ser retido na fonte** pela Fundacentro. Verifique se esse valor aparece na Nota de Sistema.
+                    - Retenção federal esperada: **R$ 0,00** (correto)
+                    - Base total das NFS-e confere com a NS
+                    - **Atenção SP**: Verifique se o **ISS foi retido na fonte** na Nota de Sistema (obrigatório para órgãos públicos quando o prestador é Simples Nacional)
                     """)
                 else:
                     st.success("**Conferência OK** — Todos os valores conferem corretamente")
                     st.markdown("""
-                    **O que foi verificado:**
                     - Base de cálculo total das NFS-e bate com o valor da Nota de Sistema
-                    - Retenção esperada (conforme tabela da IN RFB 1.234/2012) está correta
-                    - Nenhuma divergência de valores ou alíquota foi identificada
+                    - Retenção esperada (IN 1.234/2012) está correta
+                    - Nenhuma divergência identificada
                     """)
             else:
                 st.error("**Conferência com divergência**")
                 st.markdown(f"""
-                **Problema identificado:**
-                - Diferença entre o total das NFS-e e o valor da Nota de Sistema: **R$ {diferenca:,.2f}**
-
-                **Recomendação:**
-                Revise manualmente os valores de base de cálculo nas NFS-e e o lançamento na Nota de Sistema.
+                - Diferença detectada: **R$ {diferenca:,.2f}**
+                - Recomendação: Revise manualmente os valores extraídos
                 """)
 
-            st.caption("Conferidor Fiscal • Fundacentro • Baseado na IN RFB 1.234/2012 + regras do município de São Paulo")
+            st.caption("Conferidor Fiscal • Fundacentro • IN RFB 1.234/2012 + regras município de São Paulo")
