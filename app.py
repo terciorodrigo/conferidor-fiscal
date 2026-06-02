@@ -5,8 +5,8 @@ from typing import List, Dict, Tuple
 import pandas as pd
 
 st.set_page_config(page_title="Conferidor Fiscal Avançado", layout="wide")
-st.title("🧾 Conferidor Fiscal Avançado")
-st.markdown("**Múltiplas NFS-e + Detecção de Simples Nacional + Regras São Paulo**")
+st.title("🧾 Conferidor Fiscal Avançado (Debug Mode)")
+st.markdown("**Versão com informações de extração para diagnóstico**")
 
 def detectar_simples_nacional(texto: str) -> bool:
     t = texto.upper()
@@ -39,8 +39,7 @@ def identificar_tipo(texto: str) -> str:
         return "CONTA_VINCULADA"
     return "DESCONHECIDO"
 
-def extrair_base_calculo(texto: str) -> float:
-    """Tenta extrair a base de cálculo de forma mais inteligente"""
+def extrair_base_calculo(texto: str, nome_arquivo: str = "") -> float:
     padroes = [
         r'VALOR TOTAL DO SERVIÇO\s*=\s*R\$\s*([\d.]+,\d{2})',
         r'BASE DE CÁLCULO.*?R\$\s*([\d.]+,\d{2})',
@@ -51,11 +50,12 @@ def extrair_base_calculo(texto: str) -> float:
         match = re.search(padrao, texto, re.IGNORECASE)
         if match:
             try:
-                return float(match.group(1).replace('.', '').replace(',', '.'))
+                valor = float(match.group(1).replace('.', '').replace(',', '.'))
+                return valor
             except:
                 pass
 
-    # Fallback: maior valor monetário
+    # Fallback
     padrao = r'R\$\s*([\d.]+,\d{2})'
     valores = re.findall(padrao, texto)
     nums = []
@@ -64,7 +64,9 @@ def extrair_base_calculo(texto: str) -> float:
             nums.append(float(v.replace('.', '').replace(',', '.')))
         except:
             pass
-    return max(nums) if nums else 0.0
+    if nums:
+        return max(nums)
+    return 0.0
 
 def extrair_valor_principal_ns(texto: str) -> float:
     padrao = r'R\$\s*([\d.]+,\d{2})'
@@ -88,7 +90,7 @@ def classificar_servico(descricao: str) -> Tuple[str, float, str]:
     return "6190", 9.45, "Demais serviços (padrão)"
 
 # ===================== INTERFACE =====================
-st.info("Envie **uma ou mais NFS-e** + **uma Nota de Sistema**. O app detecta automaticamente Simples Nacional.")
+st.info("**Modo Debug ativado** — O app mostra os valores que está extraindo de cada arquivo.")
 
 uploaded_files = st.file_uploader(
     "Arraste os PDFs (NFS-e + NS)",
@@ -123,13 +125,13 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
             for nfs in nfs_list:
                 texto = nfs["texto"]
                 is_simples = detectar_simples_nacional(texto)
-                base = extrair_base_calculo(texto)
+                base = extrair_base_calculo(texto, nfs["nome"])
 
                 if is_simples:
                     aliquota = 0.0
                     retencao_esperada = 0.0
                     tipo_retencao = "Simples Nacional (SP)"
-                    obs = "Sem retenção federal. Verificar ISS retido na NS (obrigatório para órgãos públicos de SP)"
+                    obs = "Sem retenção federal"
                 else:
                     codigo, aliquota, nome = classificar_servico(texto[:800])
                     retencao_esperada = round(base * aliquota / 100, 2)
@@ -142,14 +144,14 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
                 resultados.append({
                     "Arquivo": nfs["nome"],
                     "Simples Nacional": "Sim" if is_simples else "Não",
-                    "Base de Cálculo (R$)": base,
+                    "Base Extraída (R$)": base,
                     "Alíquota / Tipo": tipo_retencao,
                     "Retenção Esperada (R$)": retencao_esperada,
                     "Observação": obs
                 })
 
-            # Tabela
-            st.subheader("📋 Resultado por NFS-e")
+            # Tabela com valores extraídos
+            st.subheader("📋 Resultado por NFS-e (com valores extraídos)")
             df = pd.DataFrame(resultados)
             st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -157,12 +159,18 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
             st.subheader("📊 Resumo Consolidado")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Base NFS-e", f"R$ {total_base:,.2f}")
+                st.metric("Total Base Extraída (NFS-e)", f"R$ {total_base:,.2f}")
             with col2:
                 st.metric("Retenção Esperada Total", f"R$ {total_retencao_esperada:,.2f}")
             with col3:
                 valor_ns = extrair_valor_principal_ns(ns_texto)
-                st.metric("Valor Principal NS", f"R$ {valor_ns:,.2f}")
+                st.metric("Valor Principal Extraído (NS)", f"R$ {valor_ns:,.2f}")
+
+            # Debug info
+            with st.expander("🔍 Informações de Debug (valores extraídos)"):
+                st.write(f"**Base total extraída das NFS-e:** R$ {total_base:,.2f}")
+                st.write(f"**Valor principal extraído da NS:** R$ {valor_ns:,.2f}")
+                st.write(f"**Diferença:** R$ {abs(total_base - valor_ns):,.2f}")
 
             # Resultado Final
             st.subheader("✅ Resultado da Conferência")
@@ -173,23 +181,15 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
             if diferenca <= 10:
                 if qtd_simples > 0:
                     st.success("**Conferência OK** — Prestador(es) Simples Nacional detectado(s)")
-                    st.markdown("""
-                    - Retenção federal esperada: **R$ 0,00** (correto)
-                    - Base total das NFS-e confere com a NS
-                    - **Atenção SP**: Verifique se o **ISS foi retido na fonte** na Nota de Sistema (obrigatório para órgãos públicos quando o prestador é Simples Nacional)
-                    """)
                 else:
                     st.success("**Conferência OK** — Todos os valores conferem corretamente")
-                    st.markdown("""
-                    - Base de cálculo total das NFS-e bate com o valor da Nota de Sistema
-                    - Retenção esperada (IN 1.234/2012) está correta
-                    - Nenhuma divergência identificada
-                    """)
             else:
                 st.error("**Conferência com divergência**")
                 st.markdown(f"""
-                - Diferença detectada: **R$ {diferenca:,.2f}**
-                - Recomendação: Revise manualmente os valores extraídos
+                **Problema:** Diferença de **R$ {diferenca:,.2f}** entre o total extraído das NFS-e e o valor da NS.
+                
+                Isso geralmente acontece quando o app não consegue extrair corretamente o "VALOR TOTAL DO SERVIÇO" da NFS-e.
+                Verifique na seção de Debug acima se o valor extraído está correto.
                 """)
 
             st.caption("Conferidor Fiscal • Fundacentro • IN RFB 1.234/2012 + regras município de São Paulo")
