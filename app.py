@@ -39,47 +39,39 @@ def identificar_tipo(texto: str) -> str:
         return "CONTA_VINCULADA"
     return "DESCONHECIDO"
 
-def extrair_base_calculo(texto: str, nome_arquivo: str = "") -> float:
+def extrair_valores_monetarios(texto: str) -> List[float]:
+    """Extrai todos os valores monetários (mais robusto)"""
+    padrao = r'(?:R\$\s*)?([\d.]+,\d{2})'
+    valores_str = re.findall(padrao, texto)
+    nums = []
+    for v in valores_str:
+        try:
+            nums.append(float(v.replace('.', '').replace(',', '.')))
+        except:
+            pass
+    return nums
+
+def extrair_base_calculo(texto: str) -> float:
     padroes = [
-        r'VALOR TOTAL DO SERVIÇO\s*=\s*R\$\s*([\d.]+,\d{2})',
-        r'BASE DE CÁLCULO.*?R\$\s*([\d.]+,\d{2})',
-        r'VALOR TOTAL.*?R\$\s*([\d.]+,\d{2})',
-        r'FATURAMENTO.*?R\$\s*([\d.]+,\d{2})',
+        r'VALOR TOTAL DO SERVIÇO\s*=\s*R?\$\s*([\d.]+,\d{2})',
+        r'BASE DE CÁLCULO.*?R?\$\s*([\d.]+,\d{2})',
+        r'VALOR TOTAL.*?R?\$\s*([\d.]+,\d{2})',
+        r'FATURAMENTO.*?R?\$\s*([\d.]+,\d{2})',
     ]
     for padrao in padroes:
         match = re.search(padrao, texto, re.IGNORECASE)
         if match:
             try:
-                valor = float(match.group(1).replace('.', '').replace(',', '.'))
-                return valor
+                return float(match.group(1).replace('.', '').replace(',', '.'))
             except:
                 pass
 
-    # Fallback
-    padrao = r'R\$\s*([\d.]+,\d{2})'
-    valores = re.findall(padrao, texto)
-    nums = []
-    for v in valores:
-        try:
-            nums.append(float(v.replace('.', '').replace(',', '.')))
-        except:
-            pass
-    if nums:
-        return max(nums)
-    return 0.0
+    valores = extrair_valores_monetarios(texto)
+    return max(valores) if valores else 0.0
 
 def extrair_valor_principal_ns(texto: str) -> float:
-    padrao = r'R\$\s*([\d.]+,\d{2})'
-    valores = re.findall(padrao, texto)
-    nums = []
-    for v in valores:
-        try:
-            nums.append(float(v.replace('.', '').replace(',', '.')))
-        except:
-            pass
-    if not nums:
-        return 0.0
-    return max(nums)
+    valores = extrair_valores_monetarios(texto)
+    return max(valores) if valores else 0.0
 
 def classificar_servico(descricao: str) -> Tuple[str, float, str]:
     desc = descricao.upper()
@@ -125,7 +117,7 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
             for nfs in nfs_list:
                 texto = nfs["texto"]
                 is_simples = detectar_simples_nacional(texto)
-                base = extrair_base_calculo(texto, nfs["nome"])
+                base = extrair_base_calculo(texto)
 
                 if is_simples:
                     aliquota = 0.0
@@ -150,7 +142,7 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
                     "Observação": obs
                 })
 
-            # Tabela com valores extraídos
+            # Tabela
             st.subheader("📋 Resultado por NFS-e (com valores extraídos)")
             df = pd.DataFrame(resultados)
             st.dataframe(df, use_container_width=True, hide_index=True)
@@ -166,8 +158,8 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
                 valor_ns = extrair_valor_principal_ns(ns_texto)
                 st.metric("Valor Principal Extraído (NS)", f"R$ {valor_ns:,.2f}")
 
-            # Debug info
-            with st.expander("🔍 Informações de Debug (valores extraídos)"):
+            # Debug
+            with st.expander("🔍 Informações de Debug"):
                 st.write(f"**Base total extraída das NFS-e:** R$ {total_base:,.2f}")
                 st.write(f"**Valor principal extraído da NS:** R$ {valor_ns:,.2f}")
                 st.write(f"**Diferença:** R$ {abs(total_base - valor_ns):,.2f}")
@@ -186,10 +178,8 @@ if st.button("🚀 Realizar Conferência", type="primary", use_container_width=T
             else:
                 st.error("**Conferência com divergência**")
                 st.markdown(f"""
-                **Problema:** Diferença de **R$ {diferenca:,.2f}** entre o total extraído das NFS-e e o valor da NS.
-                
-                Isso geralmente acontece quando o app não consegue extrair corretamente o "VALOR TOTAL DO SERVIÇO" da NFS-e.
-                Verifique na seção de Debug acima se o valor extraído está correto.
+                **Problema:** Diferença de **R$ {diferenca:,.2f}**.
+                Verifique no Debug se o valor da NS está vindo correto.
                 """)
 
             st.caption("Conferidor Fiscal • Fundacentro • IN RFB 1.234/2012 + regras município de São Paulo")
